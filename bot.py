@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import shutil
+import tempfile
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
@@ -17,9 +18,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Token desde variable de entorno (Render) o directo
 TOKEN = os.environ.get("BOT_TOKEN", "TU_BOT_TOKEN_AQUI")
-DOWNLOAD_PATH = "/tmp/downloads"  # Render usa /tmp para almacenamiento temporal
+DOWNLOAD_PATH = "/tmp/downloads"
 
 # Crear carpeta de descargas
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -30,7 +30,30 @@ dp = Dispatcher()
 # Diccionario para cache de búsquedas
 search_cache = {}
 
-# ============ CONFIGURACIÓN DE YT-DLP CON COOKIES ============
+# ============ MANEJO DE COOKIES PARA RENDER ============
+
+def get_cookie_file():
+    """
+    Busca el archivo de cookies en diferentes ubicaciones posibles
+    Retorna la ruta si existe, o None si no
+    """
+    # Posibles ubicaciones del archivo de cookies
+    possible_paths = [
+        '/etc/secrets/cookies.txt',      # Secret File en Render
+        '/opt/render/project/src/cookies.txt',  # Directorio del proyecto
+        'cookies.txt',                   # Directorio actual
+        os.path.join(tempfile.gettempdir(), 'cookies.txt')  # Temp dir
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path) and os.access(path, os.R_OK):
+            logger.info(f"Cookies encontradas en: {path}")
+            return path
+    
+    logger.warning("No se encontró archivo de cookies")
+    return None
+
+# ============ CONFIGURACIÓN DE YT-DLP ============
 
 def get_ydl_opts():
     """Opciones para búsqueda y extracción"""
@@ -47,9 +70,10 @@ def get_ydl_opts():
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    # Usar cookies si existen (para evitar bloqueos de YouTube)
-    if os.path.exists('/etc/secrets/cookies.txt'):
-        opts['cookiefile'] = '/etc/secrets/cookies.txt'
+    # Intentar cargar cookies
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        opts['cookiefile'] = cookie_file
         logger.info("Cookies cargadas correctamente")
     
     return opts
@@ -69,12 +93,13 @@ def get_download_opts():
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    if os.path.exists('/etc/secrets/cookies.txt'):
-        opts['cookiefile'] = '/etc/secrets/cookies.txt'
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        opts['cookiefile'] = cookie_file
     
     return opts
 
-# ============ FUNCIONES DE BÚSQUEDA ============
+# ============ RESTO DE FUNCIONES (igual que antes) ============
 
 async def search_videos(query: str, limit=20):
     """Busca videos por título"""
@@ -181,8 +206,6 @@ async def get_channel_videos(channel_input: str, limit=20):
         logger.error(f"Error en get_channel_videos: {e}")
         return None
 
-# ============ FUNCIONES DE DESCARGA ============
-
 async def download_video(url: str, quality: str, format_type: str):
     """Descarga un video de YouTube"""
     try:
@@ -237,8 +260,6 @@ def get_file_size_mb(filepath):
         return f"{size_mb:.1f} MB"
     except:
         return "Desconocido"
-
-# ============ FUNCIONES DE FORMATO ============
 
 def format_duration(seconds):
     """Formatea duración del video"""
@@ -399,6 +420,12 @@ async def help_command(message: Message):
 async def test_command(message: Message):
     """Prueba de conexión con YouTube"""
     status_msg = await message.answer("🔄 Probando conexión con YouTube...")
+    
+    # Mostrar info de cookies
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        await status_msg.edit_text(f"🔄 Cookies encontradas en: {cookie_file}\nProbando conexión...")
+        status_msg = await message.answer("🔄 Probando con cookies...")
     
     try:
         with YoutubeDL(get_ydl_opts()) as ydl:
@@ -736,7 +763,6 @@ async def cleanup_old_downloads():
             for filename in os.listdir(DOWNLOAD_PATH):
                 filepath = os.path.join(DOWNLOAD_PATH, filename)
                 if os.path.isfile(filepath):
-                    # Borrar archivos con más de 1 hora
                     import time
                     if time.time() - os.path.getctime(filepath) > 3600:
                         os.remove(filepath)
@@ -754,6 +780,13 @@ async def main():
     print("⬇️ Sistema de descargas ACTIVADO")
     print("🎵 Soporte para MP3 y video")
     print("=" * 50)
+    
+    # Mostrar estado de cookies
+    cookie_file = get_cookie_file()
+    if cookie_file:
+        print(f"🍪 Cookies cargadas desde: {cookie_file}")
+    else:
+        print("⚠️ Sin cookies - Puede haber límites de YouTube")
     
     # Eliminar webhook existente (modo polling)
     await bot.delete_webhook(drop_pending_updates=True)
