@@ -14,7 +14,7 @@ class VideoDownloader:
         return cookies_path
     
     async def obtener_formatos_descarga(self, url):
-        """Obtiene información del video y genera selectores de calidad"""
+        """Solo devuelve la opción 360p fija (no necesita selección)"""
         try:
             cookies_path = self._get_cookies_path()
             ydl_opts = {
@@ -25,30 +25,6 @@ class VideoDownloader:
             }
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
-            
-            formatos = {}
-            
-            # Calidades disponibles (usando selectores dinámicos)
-            calidades = [144, 240, 360, 480, 720, 1080, 1440, 2160]
-            for altura in calidades:
-                # Selector: mejor video con altura <= altura + mejor audio, o mejor formato simple con esa altura
-                selector = f'bestvideo[height<={altura}]+bestaudio/best[height<={altura}]'
-                formatos[altura] = {
-                    'selector': selector,
-                    'desc': f'{altura}p'
-                }
-            
-            # Selector para mejor calidad disponible (sin límite de altura)
-            formatos['best'] = {
-                'selector': 'bestvideo+bestaudio/best',
-                'desc': '⭐ Mejor calidad'
-            }
-            
-            # Selector para solo audio
-            formatos['audio'] = {
-                'selector': 'bestaudio/best',
-                'desc': '🎵 MP3 (Audio)'
-            }
             
             # Limpiar cookies
             try:
@@ -61,50 +37,36 @@ class VideoDownloader:
                 'duration': info.get('duration', 0),
                 'uploader': info.get('uploader', 'Desconocido'),
                 'thumbnail': info.get('thumbnail', ''),
-                'formats': formatos
+                'url': url
             }
             
         except Exception as e:
-            logger.error(f"Error obteniendo formatos: {e}")
+            logger.error(f"Error obteniendo información: {e}")
             raise
     
-    async def descargar_video(self, url, selector, tipo='video'):
-        """Descarga usando el selector de formato (nunca falla)"""
+    async def descargar_video_360p(self, url):
+        """Descarga siempre en 360p con video+audio juntos (no necesita FFmpeg)"""
         archivo = None
         cookies_path = None
         try:
             cookies_path = self._get_cookies_path()
             
-            # Opciones base
+            # Selector fijo: busca un formato con altura <= 360 que tenga video y audio
+            # Si no existe, toma el mejor formato simple (que ya trae audio)
+            format_selector = 'best[height<=360]/best'
+            
             ydl_opts = {
+                'format': format_selector,
                 'cookiefile': cookies_path,
                 'quiet': True,
                 'no_warnings': True,
                 'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
             }
             
-            if tipo == 'audio':
-                ydl_opts.update({
-                    'format': selector,
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192'
-                    }]
-                })
-            else:
-                ydl_opts.update({
-                    'format': selector,
-                    'merge_output_format': 'mp4'
-                })
-            
             def _descargar():
                 with YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     filename = ydl.prepare_filename(info)
-                    if tipo == 'audio':
-                        base = os.path.splitext(filename)[0]
-                        filename = base + '.mp3'
                     return filename
             
             loop = asyncio.get_event_loop()
@@ -113,7 +75,7 @@ class VideoDownloader:
             if not os.path.exists(archivo):
                 # Buscar variaciones de extensión
                 base = os.path.splitext(archivo)[0]
-                for ext in ['.mp4', '.mkv', '.webm', '.mp3']:
+                for ext in ['.mp4', '.mkv', '.webm']:
                     prueba = base + ext
                     if os.path.exists(prueba):
                         archivo = prueba
@@ -122,11 +84,7 @@ class VideoDownloader:
             return archivo
             
         except Exception as e:
-            logger.error(f"Error descargando con selector {selector}: {e}")
-            # Fallback: si el selector específico falla, usar 'best'
-            if selector != 'bestvideo+bestaudio/best' and 'Requested format is not available' in str(e):
-                logger.warning("Reintentando con selector 'best'...")
-                return await self.descargar_video(url, 'bestvideo+bestaudio/best', tipo)
+            logger.error(f"Error descargando: {e}")
             raise
         finally:
             if cookies_path and os.path.exists(cookies_path):
