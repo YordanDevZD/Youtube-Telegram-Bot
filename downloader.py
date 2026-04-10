@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 from yt_dlp import YoutubeDL
 from config import logger, DOWNLOAD_DIR, COOKIES
 
@@ -14,165 +15,134 @@ class VideoDownloader:
         return cookies_path
     
     async def obtener_formatos_descarga(self, url):
+        """Solo obtiene información básica, sin intentar listar formatos problemáticos"""
         try:
             cookies_path = self._get_cookies_path()
             
-            ydl_opts_info = {
+            # Usar extract_flat para evitar problemas con formatos
+            ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
                 'cookiefile': cookies_path,
-                'extract_flat': False,
+                'extract_flat': True,  # Importante: no extraer formatos detallados
             }
             
-            with YoutubeDL(ydl_opts_info) as ydl:
+            with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
             
-            formatos = {}
-            mejor_video = {}
-            mejor_audio = None
-            
-            for f in info.get('formats', []):
-                height = f.get('height')
-                # Videos con audio y video juntos
-                if height and f.get('acodec') != 'none' and f.get('vcodec') != 'none':
-                    if height not in formatos:
-                        formatos[height] = {
-                            'format_id': f['format_id'],
-                            'ext': f.get('ext', 'mp4'),
-                            'filesize': f.get('filesize', 0),
-                            'fps': f.get('fps', 30),
-                            'vcodec': f.get('vcodec', '')
-                        }
-                    else:
-                        if f.get('filesize', 0) > formatos[height].get('filesize', 0):
-                            formatos[height]['format_id'] = f['format_id']
-                            formatos[height]['filesize'] = f.get('filesize', 0)
-                
-                # Solo video (sin audio)
-                elif height and f.get('vcodec') != 'none' and f.get('acodec') == 'none':
-                    if height not in mejor_video or f.get('filesize', 0) > mejor_video.get(height, {}).get('filesize', 0):
-                        mejor_video[height] = {
-                            'format_id': f['format_id'],
-                            'filesize': f.get('filesize', 0),
-                            'ext': f.get('ext', 'mp4')
-                        }
-                
-                # Solo audio
-                elif f.get('acodec') != 'none' and f.get('vcodec') == 'none':
-                    abr = f.get('abr', 0)
-                    if mejor_audio is None or abr > mejor_audio.get('abr', 0):
-                        mejor_audio = {
-                            'format_id': f['format_id'],
-                            'abr': abr,
-                            'filesize': f.get('filesize', 0),
-                            'ext': f.get('ext', 'm4a')
-                        }
-            
-            # Si no hay formatos con audio integrado, crear combinaciones
-            if not formatos and mejor_video and mejor_audio:
-                for height, vinfo in mejor_video.items():
-                    format_id_combo = f"{vinfo['format_id']}+{mejor_audio['format_id']}"
-                    formatos[height] = {
-                        'format_id': format_id_combo,
-                        'ext': 'mp4',
-                        'filesize': (vinfo.get('filesize', 0) + mejor_audio.get('filesize', 0)),
-                        'fps': 30,
-                        'vcodec': 'avc1'
-                    }
-            
-            # Agregar opción de solo audio
-            if mejor_audio:
-                formatos['audio'] = {
-                    'format_id': mejor_audio['format_id'],
-                    'abr': mejor_audio['abr'],
-                    'filesize': mejor_audio.get('filesize', 0),
-                    'ext': 'mp3'
-                }
-            
-            # Opción de mejor calidad combinada
-            if formatos:
-                mejor_calidad = max([h for h in formatos.keys() if isinstance(h, int)], default=None)
-                if mejor_calidad:
-                    formatos['best'] = formatos[mejor_calidad].copy()
-                    formatos['best']['description'] = 'Mejor calidad'
-            
+            # Limpiar cookies
             try:
                 os.remove(cookies_path)
             except:
                 pass
-            
-            if not formatos:
-                raise ValueError("No se encontraron formatos disponibles")
             
             return {
                 'title': info.get('title', 'Sin título'),
                 'duration': info.get('duration', 0),
                 'uploader': info.get('uploader', 'Desconocido'),
                 'thumbnail': info.get('thumbnail', ''),
-                'formats': formatos
+                'url': url
             }
             
         except Exception as e:
-            logger.error(f"Error obteniendo formatos: {e}")
+            logger.error(f"Error obteniendo información: {e}")
             raise
     
-    async def descargar_video(self, url, format_id, tipo='video'):
+    async def descargar_video(self, url):
+        """Descarga usando el método más simple y confiable"""
         archivo = None
         cookies_path = None
         try:
             cookies_path = self._get_cookies_path()
             
-            if tipo == 'audio':
-                ydl_opts_download = {
-                    'format': format_id,
-                    'cookiefile': cookies_path,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192'
-                    }],
-                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
-                }
-            else:
-                ydl_opts_download = {
-                    'format': format_id,
-                    'cookiefile': cookies_path,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'merge_output_format': 'mp4',
-                    'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s')
-                }
+            # La configuración más simple que funciona SIEMPRE
+            ydl_opts = {
+                'cookiefile': cookies_path,
+                'quiet': False,  # Temporal para ver errores
+                'no_warnings': False,
+                'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
+                'format': 'best',  # Mejor formato disponible (video+audio juntos)
+                'ignoreerrors': True,
+                'nooverwrites': True,
+                'continuedl': True,
+            }
             
             def _descargar():
-                with YoutubeDL(ydl_opts_download) as ydl:
+                with YoutubeDL(ydl_opts) as ydl:
+                    # Descargar directamente
                     info = ydl.extract_info(url, download=True)
                     filename = ydl.prepare_filename(info)
-                    if tipo == 'audio':
+                    
+                    # Verificar si el archivo existe
+                    if not os.path.exists(filename):
+                        # Buscar con otras extensiones
                         base = os.path.splitext(filename)[0]
-                        filename = base + '.mp3'
+                        for ext in ['.mp4', '.mkv', '.webm', '.mp3']:
+                            if os.path.exists(base + ext):
+                                return base + ext
                     return filename
             
             loop = asyncio.get_event_loop()
             archivo = await loop.run_in_executor(None, _descargar)
             
-            if not os.path.exists(archivo):
-                raise FileNotFoundError(f"No se encontró el archivo: {archivo}")
+            if not archivo or not os.path.exists(archivo):
+                raise Exception("No se pudo descargar el archivo")
             
             return archivo
             
         except Exception as e:
             logger.error(f"Error descargando: {e}")
-            if archivo and os.path.exists(archivo):
-                try:
-                    os.remove(archivo)
-                except:
-                    pass
-            raise
+            # Último intento: usar subprocess directamente
+            try:
+                return await self._descargar_con_subprocess(url)
+            except:
+                raise
         finally:
             if cookies_path and os.path.exists(cookies_path):
                 try:
                     os.remove(cookies_path)
                 except:
                     pass
+    
+    async def _descargar_con_subprocess(self, url):
+        """Método alternativo usando subprocess (más robusto)"""
+        cookies_path = self._get_cookies_path()
+        
+        cmd = [
+            'yt-dlp',
+            '--cookies', cookies_path,
+            '-f', 'best',
+            '-o', os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
+            url
+        ]
+        
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                raise Exception(f"Error en subprocess: {stderr.decode()}")
+            
+            # Buscar el archivo descargado
+            files = os.listdir(DOWNLOAD_DIR)
+            video_files = [f for f in files if f.endswith(('.mp4', '.mkv', '.webm'))]
+            
+            if not video_files:
+                raise Exception("No se encontró el archivo descargado")
+            
+            # Obtener el archivo más reciente
+            archivos = [os.path.join(DOWNLOAD_DIR, f) for f in video_files]
+            archivo = max(archivos, key=os.path.getctime)
+            
+            return archivo
+            
+        except Exception as e:
+            logger.error(f"Error en subprocess: {e}")
+            raise
+        finally:
+            if os.path.exists(cookies_path):
+                os.remove(cookies_path)
