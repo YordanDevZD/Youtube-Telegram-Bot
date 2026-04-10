@@ -31,7 +31,7 @@ COOKIES = """# Netscape HTTP Cookie File
 VERSION = "0.5.0"
 
 # Configuración de descargas
-DOWNLOAD_DIR = "downloads"
+DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
 SUSCRIPCIONES_FILE = "subscripciones.json"
 
 # Límite por defecto
